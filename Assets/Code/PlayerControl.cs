@@ -11,8 +11,7 @@ public class PlayerControl : MonoBehaviour {
 	public float gorundBias = 0.1f;
 	public PhysicsMaterial2D airMaterial;
 	public PhysicsMaterial2D groundMaterial;
-
-	public Vector2 climbAnimationOffset = new Vector2(0.243f, 1.91f);
+	public float fallDeathTime = 3;
 
 	private float hori;
 	private bool jump;
@@ -29,6 +28,13 @@ public class PlayerControl : MonoBehaviour {
 	private bool ledging;
 	private bool armsOut;
 	private bool climbing;
+	private Transform sprite;
+	[HideInInspector]
+	public Vector2 ledge;
+
+	private float fallDeathTimer;
+
+	public static bool win;
 
 	Collider2D playerCol;
 	Rigidbody2D rb;
@@ -45,22 +51,28 @@ public class PlayerControl : MonoBehaviour {
 		ledgeRadius = transform.Find("Ledge").GetComponent<CircleCollider2D>();
 		ledgeContact = new ContactFilter2D();
 		ledgeContact.SetLayerMask(1);
-		crb = transform.Find("Sprite").GetComponentsInChildren<Rigidbody2D>();
-		tjs = transform.Find("Sprite").GetComponentsInChildren<TargetJoint2D>();
+		sprite = transform.Find("Sprite");
+		crb = sprite.GetComponentsInChildren<Rigidbody2D>();
+		tjs = sprite.GetComponentsInChildren<TargetJoint2D>();
 		arms = new Transform[] { transform.Find("Sprite/Player arm back"), transform.Find("Sprite/Player arm front") };
 
 		animator = GetComponentInChildren<Animator>();
 	}
 
 	void Update() {
-		if (animator.GetCurrentAnimatorStateInfo(0).IsTag("Climb")) return;
+		if (animator.GetCurrentAnimatorStateInfo(0).IsTag("Climb") || win) return;
+
+		animator.SetBool("Grounded", isGrounded);
 
 		hori = Input.GetAxis("Horizontal");
 
 		//Only update jump to true
-		if (Input.GetButtonDown("Jump") && (isGrounded || isOnWall)) jump = true;
+		if ((Input.GetButtonDown("Jump") && isGrounded) || (Input.GetButton("Jump") && isOnWall)) {
+			jump = true;
+			animator.SetTrigger("Jump");
+		}
 
-		//Ledgeing
+		//Ledging
 		if (Input.GetButton("Ledge")) {
 			List<Collider2D> cols = new List<Collider2D>();
 			if (ledgeRadius.OverlapCollider(ledgeContact, cols) != 0) {
@@ -77,11 +89,8 @@ public class PlayerControl : MonoBehaviour {
 							Ledge(point1);
 						} else {
 							Vector2 closestPoint = (point0 - (Vector2)arms[0].position).sqrMagnitude > (point1 - (Vector2)arms[0].position).sqrMagnitude ? point1 : point0;
-							Vector2 lookAt = (Vector3)closestPoint - arms[0].position;
-
-							foreach (Transform arm in arms) {
-								arm.up = -lookAt;
-							}
+							//Vector2 lookAt = (Vector3)closestPoint - arms[0].position;
+							ledge = closestPoint;
 						}
 
 						armsOut = true;
@@ -102,10 +111,36 @@ public class PlayerControl : MonoBehaviour {
 				animator.SetTrigger("Climbing");
 			}
 		}
+
+		//Orientation
+		if (ledging) {
+			transform.localScale = ((ledge.x - transform.position.x) > 0 ? Vector3.right : Vector3.left) + transform.localScale.y * Vector3.up + transform.localScale.z * Vector3.forward;
+		} else if (isOnWall) {
+			transform.localScale = (wallNormal.x > 0 ? Vector3.right : Vector3.left) + transform.localScale.y * Vector3.up + transform.localScale.z * Vector3.forward;
+		} else if (isGrounded && Vector2.Dot(groundNormal, Vector2.up) < 0.5) {
+			transform.localScale = (groundNormal.x > 0 ? Vector3.right : Vector3.left) + transform.localScale.y * Vector3.up + transform.localScale.z * Vector3.forward;
+		} else if (hori != 0) {
+			transform.localScale = (hori > 0 ? Vector3.right : Vector3.left) + transform.localScale.y * Vector3.up + transform.localScale.z * Vector3.forward;
+		}
+
+		//Falldamage
+		if (isGrounded && Vector2.Dot(groundNormal, Vector2.up) > maxGroundAngle) {
+			if (fallDeathTimer > fallDeathTime) {
+				GameObject.FindGameObjectWithTag("GameLoop").GetComponent<GameLoop>().RestartLevel();
+			}
+		}
+
+		if (rb.velocity.y < 0) {
+			fallDeathTimer += Time.deltaTime;
+			animator.SetBool("Fall", true);
+		} else {
+			fallDeathTimer = 0;
+			animator.SetBool("Fall", false);
+		}
 	}
 
 	void FixedUpdate() {
-		if (ledging || animator.GetCurrentAnimatorStateInfo(0).IsTag("Climb")) return;
+		if (ledging || animator.GetCurrentAnimatorStateInfo(0).IsTag("Climb") || win) return;
 
 		//Stick to ground
 		if (!isGrounded) {
@@ -123,13 +158,16 @@ public class PlayerControl : MonoBehaviour {
 
 			playerCol.sharedMaterial = airMaterial;
 			isGrounded = false;
+			isOnWall = false;
 			jump = false;
 		}
 
 		//Movement
-		if (isGrounded) {
+		if (isGrounded && Vector2.Dot(groundNormal, Vector2.up) > maxGroundAngle) {
 			rb.velocity = hori * speed * Time.fixedDeltaTime * Vector2.right + rb.velocity.y * Vector2.up;
+			animator.SetBool("Walking", Mathf.Abs(hori) > 0.01);
 		} else {
+			animator.SetBool("Walking", false);
 			/*if (rb.velocity.x > terminalXVelocity && hori > 0) hori = 0;
 			if (rb.velocity.x < -terminalXVelocity && hori < 0) hori = 0;
 
@@ -194,6 +232,12 @@ public class PlayerControl : MonoBehaviour {
 		rb.simulated = false;
 		rb.velocity = Vector2.zero;
 
+		transform.position -= ((transform.position + new Vector3(0.137f, 0.891f)) - (Vector3)point);
+
+		animator.SetBool("Holding", true);
+
+		ledge = point;
+
 		foreach (Rigidbody2D rb in crb) {
 			rb.simulated = true;
 		}
@@ -205,6 +249,10 @@ public class PlayerControl : MonoBehaviour {
 
 	private void StopLedge() {
 		rb.simulated = true;
+
+		animator.SetBool("Holding", false);
+
+		ledge = Vector2.zero * float.NaN;
 
 		foreach (Rigidbody2D rb in crb) {
 			rb.simulated = false;
@@ -218,6 +266,17 @@ public class PlayerControl : MonoBehaviour {
 	public void EndClimbingAnimation() {
 		ArmsDown();
 		climbing = false;
-		transform.position += (Vector3)climbAnimationOffset;
+		transform.position = sprite.position;
+		sprite.localPosition = Vector3.zero;
+	}
+
+	public void CenterPlayerBody() {
+		//Offset sprite, so body is 0
+		transform.position += sprite.Find("Player body").localPosition;
+		sprite.Find("Player arm back").localPosition -= sprite.Find("Player body").localPosition;
+		sprite.Find("Player arm front").localPosition -= sprite.Find("Player body").localPosition;
+		sprite.Find("Player body").localPosition = Vector3.zero;
+		sprite.transform.localPosition = Vector3.zero;
+
 	}
 }
